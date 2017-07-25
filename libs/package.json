@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "dnscache": "^1.0.1",
-    "lru-cache": "^4.1.1"
-  }
-}
