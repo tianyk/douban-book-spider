@@ -3,7 +3,8 @@ const path = require('path');
 // 默认config会去加载./config目录
 process.env.NODE_CONFIG_DIR = path.join(__dirname, 'config');
 // 修改运行目录 强制为执行文件所在文件夹
-if (__dirname === '/__enclose_io_memfs__') process.chdir(path.dirname(process.argv[0]));
+if (path.basename(__dirname) === '__enclose_io_memfs__' /*__dirname === '/__enclose_io_memfs__' || __dirname === 'C:\__enclose_io_memfs__' */) 
+    process.chdir(path.dirname(process.argv[0]));
 else process.chdir(path.dirname(process.argv[1]));
 const cheerio = require('cheerio');
 const config = require('config');

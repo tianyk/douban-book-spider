@@ -17,6 +17,7 @@
     "cheerio": "^1.0.0-rc.2",
     "config": "^1.26.1",
     "debug": "^2.6.8",
+    "dnscache": "^1.0.1",
     "htmlparser2": "^3.9.2",
     "is-type-of": "^1.1.0",
     "lodash": "^4.17.4",
