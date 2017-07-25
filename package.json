@@ -1,0 +1,29 @@
+{
+  "name": "douban-book-spider",
+  "version": "1.0.0",
+  "description": "douban-book-spider",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "douban",
+    "book",
+    "spider"
+  ],
+  "author": "tyk",
+  "license": "ISC",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.2",
+    "config": "^1.26.1",
+    "debug": "^2.6.8",
+    "htmlparser2": "^3.9.2",
+    "is-type-of": "^1.1.0",
+    "lodash": "^4.17.4",
+    "log": "^1.4.0",
+    "mysql2": "^1.3.6",
+    "randomstring": "^1.1.5",
+    "request": "^2.81.0",
+    "write": "^1.0.3"
+  }
+}
