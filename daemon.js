@@ -18,6 +18,8 @@ function createWorker() {
     });
 
     worker.on('exit', () => {
+        // TODO 处理正常退出 exitcode=0
+        // TODO Linux环境下kill主进程，子进程不死
         logger.info(`Worker ${worker.pid} exited.`);
         setTimeout(() => {
             createWorker();
@@ -26,5 +28,6 @@ function createWorker() {
 
     logger.info(`Create worker. pid: ${worker.pid}.`);
 }
+
 
 createWorker();

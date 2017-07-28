@@ -3,9 +3,10 @@ const path = require('path');
 // 默认config会去加载./config目录
 process.env.NODE_CONFIG_DIR = path.join(__dirname, 'config');
 // 修改运行目录 强制为执行文件所在文件夹
-if (path.basename(__dirname) === '__enclose_io_memfs__' /*__dirname === '/__enclose_io_memfs__' || __dirname === 'C:\__enclose_io_memfs__' */) 
+if (path.basename(__dirname) === '__enclose_io_memfs__' /*__dirname === '/__enclose_io_memfs__' || __dirname === 'C:\__enclose_io_memfs__' */)
     process.chdir(path.dirname(process.argv[0]));
 else process.chdir(path.dirname(process.argv[1]));
+const package = require('./package');
 const cheerio = require('cheerio');
 const config = require('config');
 const debug = require('debug')('douban_book_spider');
@@ -17,6 +18,7 @@ const url = require('url');
 const util = require('util');
 const write = require('write');
 const Log = require('log');
+const decamelize = require('decamelize');
 const dns = require('./libs/dns');
 const read = util.promisify(fs.readFile);
 
@@ -50,6 +52,18 @@ function delay(time) {
             reslove();
         }, time);
     })
+}
+
+async function findMyIp() {
+    let httpGet = util.promisify(request.get);
+    try {
+        let { body: ipInfo } = await Promise.race([httpGet('https://api.ipify.org?format=json'), httpGet('http://ipinfo.io')]);
+        debug('ipInfo: %j', ipInfo);
+        ipInfo = JSON.parse(ipInfo);
+        return ipInfo.ip || 'unknow';
+    } catch (e) {
+        return 'unknow';
+    }
 }
 
 function isStandardHtml(html) {
@@ -152,30 +166,6 @@ Parse.prototype._parse = async function (html) {
     throw new Error('_parse() is not implemented');
 }
 
-Parse.prototype.snapshoot = async function (uri, headers = {}) {
-    let uriObj = url.parse(uri);
-    let dest = path.join(this.dir, 'html', uriObj.host, uriObj.pathname, 'index.html');
-    let request = this.request;
-    let get = util.promisify(request.get);
-
-    let { statusCode, body } = await get(uri, { headers: _.merge(HEADERS, headers) });
-    if (statusCode !== 200) {
-        let err = new Error(`${statusCode}`);
-        err.cause = body;
-        throw err;
-    }
-
-    await write(dest, body);
-    return body;
-}
-
-Parse.prototype.download = async function (url, dest, headers = {}) {
-    // let dest = path.join(this.dir, this.base64.encode(url), path.extname(url));
-    await download(url, dest, {
-        headers: _.merge(HEADERS, headers)
-    });
-}
-
 // Parse
 function DoubanTagIndex() {
     if (!this instanceof DoubanTagIndex) return new DoubanTagIndex();
@@ -266,11 +256,11 @@ DoubanBookPage.prototype._parse = async function (html) {
     let ratingNumRaters = $rating.find('.rating_people').children('span').text().trim();
 
     // 内容简介
-    let summary = $relatedInfo.children('div.indent').eq(0).text();
+    let summary = $relatedInfo.children('div.indent').eq(0).text().trim();
     // 作者简介
-    let authorIntro = $relatedInfo.children('div.indent').eq(1).text();
+    let authorIntro = $relatedInfo.children('div.indent').eq(1).text().trim();
     // 目录
-    let catalog = $relatedInfo.children('div.indent').eq(3).text();
+    let catalog = $relatedInfo.children('div.indent').eq(3).text().trim();
 
     // 标签
     let tags = $tagsSection.find('div.indent span').map((_, el) => $(el).text().trim()).get();
@@ -284,6 +274,7 @@ DoubanBookPage.prototype._parse = async function (html) {
         book: {
             title,
             originTitle,
+            image,
             author,
             translator,
             publisher,
@@ -317,6 +308,7 @@ DoubanBookPage.prototype._parse = async function (html) {
 function Spider(options) {
     this.pool = require('mysql2/promise').createPool(options.mysql);
     this.parses = options.parses;
+    this.hostname = options.hostname;
     this.request = request.defaults({
         headers: HEADERS,
         keepAlive: true,
@@ -337,13 +329,22 @@ function Spider(options) {
 }
 
 Spider.prototype.parse = async function (url, options = {}) {
+    // 并发处理 modify: 2017年07月27日11:11:09 抽取锁定逻辑到 parse 步骤
+    // let [{ affectedRows = 0 }] = await this.pool.query(`update links set state = ?, version = ?, hostname = ? where link = ? and version = ?`, ['active', options.version + 1, this.hostname, url, options.version]);
+    let [{ affectedRows = 0 }] = await this.pool.query(`update links set state = ?, version = ? where link = ? and version = ?`, ['active', options.version + 1, url, options.version]);
+    debug('affectedRows: %d', affectedRows);
+    if (affectedRows === 0) return;
+
     // 进一步封装 把parse后（成功/失败）的逻辑抽取出来
     try {
-        return await this._parse(url, options);
+        await this._parse(url, options);
     } catch (err) {
-        this.pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
+        // 暂时将更新标识挪到_parse内部处理
+        // await this.pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
         throw err;
     }
+    // TODO 统一更新任务状态
+    // await this.pool.query('update links set state = ? where link = ?', ['complete', url]);
 }
 
 Spider.prototype._parse = async function (url, options = {}) {
@@ -367,6 +368,7 @@ Spider.prototype._parse = async function (url, options = {}) {
     let conn = await pool.getConnection();
     await conn.beginTransaction();
     try {
+        // 兼容离线分析 新增 complete-success / complete-failed 状态 抽取complete状态到事物外
         await conn.query('update links set html = ?, state = ? where link = ?', [html, 'complete', url]);
         if (ret.links.length > 0) {
             // insert or update
@@ -379,9 +381,46 @@ Spider.prototype._parse = async function (url, options = {}) {
     } catch (err) {
         debug('process ret fail: %s', err.stack);
         await conn.rollback();
+        // TODO 暂时 下个版本删除
+        await pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
         throw new SpiderError(err, html);
     } finally {
         if (conn) conn.release();
+    }
+
+    if (ret.book) {
+        // 兼容老版
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+        try {
+            // 暂时
+            await conn.query('update links set state = ? where link = ?', ['complete-success', url]);
+            let book = _.chain(ret.book).mapKeys((val, key) => decamelize(key)).mapValues((val) => is.array(val) ? val.join(',') : val).value();
+            let rating = book.rating;
+            delete book.rating;
+            book.pubdate = new Date(book.pubdate);
+            book.alt = url;
+            book['origin_id'] = url.match(/\d+/)[0];
+            book['created_at'] = new Date();
+            book['updated_at'] = new Date();
+            book['rating_max'] = rating.max;
+            book['rating_num_raters'] = rating.numRaters;
+            book['rating_average'] = rating.average;
+            book['rating_min'] = rating.min;
+            debug('book: %j', book);
+
+            await conn.query('insert into books set ? ', book);
+
+            await conn.commit();
+        } catch (err) {
+            debug('process ret fail: %s', err.stack);
+            await conn.rollback();
+            // TODO 暂时 下个版本删除
+            await pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'complete-failed', url]);
+            throw new SpiderError(err, html);
+        } finally {
+            if (conn) conn.release();
+        }
     }
 
     debug('Spider.parse done %s', url);
@@ -403,7 +442,7 @@ Spider.prototype.snapshoot = async function (uri, headers = {}) {
     // 校验返回的HTML是否合法
     if (!isStandardHtml(body)) throw new SpiderError(`NOT-STANDARD-HTML-[${uri}]`, body);
     if (!!config.storeSnapshoot) await write(dest, body);
-    return body;
+    return `${body} \n <!-- ${this.hostname} -->`;
 }
 
 Spider.prototype.download = async function (url, dest, headers = {}) {
@@ -414,13 +453,15 @@ Spider.prototype.download = async function (url, dest, headers = {}) {
 }
 
 Spider.prototype.start = async function () {
+    let time = process.hrtime();
     try {
         await this._start();
     } catch (err) {
         logger.warning('_start() fail.');
         logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`);
     }
-    await delay(config.taskDelay);
+    let diff = process.hrtime(time);
+    await delay(config.taskDelay - diff[0] * 1000);
     this.start().catch((err) => logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`));
 }
 
@@ -434,21 +475,20 @@ Spider.prototype.start = async function () {
 // - inactive
 // - failed
 // - complete
+// 兼容离线解析
+// - complete-failed
+// - complete-success 
 Spider.prototype._start = async function () {
     let self = this;
     let pool = self.pool;
     let [links] = await pool.query('select link,referer,version from links where state = ? limit 0,1', ['inactive']);
     debug('links: %j', links);
-    if (links.length === 0) return await self.pool.end();
-    let link = links[0];
-    // 并发处理
-    let [{ affectedRows = 0 }] = await pool.query(`update links set state = ?, version = ? where link = ? and version = ?`, ['active', link.version + 1, link.link, link.version]);
-    debug('affectedRows: %d', affectedRows);
-    if (affectedRows === 0) return;
+    if (links.length === 0) return await pool.end();
 
+    let link = links[0];
     let headers = {};
     if (!!link.referer) headers.referer = encodeURI(link.referer);
-    await self.parse(link.link, { headers: headers }).catch((err) => logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`));
+    await self.parse(link.link, { headers: headers, version: link.version }).catch((err) => logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`));
 
     // let tasks = parallel(links, 1);
     // debug('tasks: %j', tasks);
@@ -462,19 +502,23 @@ Spider.prototype._start = async function () {
     //             .then(console.log)
     //             .catch(console.error);
     //     }));
-
-    //     // 延迟8s
-    //     await delay(config.taskDelay);
     // }
-    // debug('next tasks.');
 }
 
-let spider = new Spider({
-    mysql: config.mysql,
-    parses: [new DoubanTagIndex(), new DoubanTagPage(), new DoubanBookPage()]
-});
+findMyIp()
+    .then(ip => {
+        let hostname = require('os').hostname();
+        debug('hostname: %s', `${ip}/${hostname}/${package.version}`);
+        let spider = new Spider({
+            mysql: config.mysql,
+            hostname: `${ip}/${hostname}/${package.version}`,
+            parses: [new DoubanTagIndex(), new DoubanTagPage(), new DoubanBookPage()]
+        });
 
-spider.start().catch(logger.warning.bind(logger));
+        spider.start().catch(logger.warning.bind(logger));
+    })
+    .catch(logger.error.bind(logger));
+
 
 process.on('uncatchException', (err) => {
     logger.error('<---------- uncatchException');
