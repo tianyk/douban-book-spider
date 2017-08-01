@@ -3,13 +3,14 @@ const path = require('path');
 // 默认config会去加载./config目录
 process.env.NODE_CONFIG_DIR = path.join(__dirname, 'config');
 // 修改运行目录 强制为执行文件所在文件夹
-if (path.basename(__dirname) === '__enclose_io_memfs__' /*__dirname === '/__enclose_io_memfs__' || __dirname === 'C:\__enclose_io_memfs__' */)
-    process.chdir(path.dirname(process.argv[0]));
-else process.chdir(path.dirname(process.argv[1]));
+// if (path.basename(__dirname) === '__enclose_io_memfs__' /*__dirname === '/__enclose_io_memfs__' || __dirname === 'C:\__enclose_io_memfs__' */)
+//     process.chdir(path.dirname(process.argv[0]));
+// else process.chdir(path.dirname(process.argv[1]));
 const package = require('./package');
 const cheerio = require('cheerio');
-const config = require('config');
-const debug = require('debug')('douban_book_spider');
+const ms = require('ms');
+const argv = require('yargs').argv;
+const debug = require('debug')('spider:index');
 const htmlparser = require('htmlparser2');
 const is = require('is-type-of');
 const _ = require('lodash');
@@ -21,8 +22,19 @@ const Log = require('log');
 const decamelize = require('decamelize');
 const dns = require('./libs/dns');
 const read = util.promisify(fs.readFile);
+const config = (function () {
+    if (argv.config) {
+        debug('config: %s', path.resolve(argv.config));
+        let config = require(path.resolve(argv.config));
+        return _.merge(require('config'), config);
+    } else {
+        return require('config');
+    }
+})();
 
-const logFileStream = fs.createWriteStream(path.join(process.cwd(), 'main.log'), { flags: 'a' });
+debug('env: %o, argv', process.env, process.argv);
+
+const logFileStream = fs.createWriteStream(config.logpath, { flags: 'a' });
 const logger = new Log('info', logFileStream);
 
 const HEADERS = {
@@ -47,6 +59,7 @@ function parallel(tasks, limit) {
 }
 
 function delay(time) {
+    debug('delay: %o', time);
     return new Promise(function (reslove, reject) {
         setTimeout(function () {
             reslove();
@@ -57,10 +70,11 @@ function delay(time) {
 async function findMyIp() {
     let httpGet = util.promisify(request.get);
     try {
-        let { body: ipInfo } = await Promise.race([httpGet('https://api.ipify.org?format=json'), httpGet('http://ipinfo.io')]);
-        debug('ipInfo: %j', ipInfo);
-        ipInfo = JSON.parse(ipInfo);
-        return ipInfo.ip || 'unknow';
+        let { body: ipInfo } = await Promise.race([httpGet('https://api.ipify.org'), httpGet('http://ipinfo.io'), httpGet('http://myip.ipip.net')]);
+        let match = ipInfo.match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
+
+        if (match) return match[0];
+        else return 'unknow';
     } catch (e) {
         return 'unknow';
     }
@@ -453,22 +467,24 @@ Spider.prototype.download = async function (url, dest, headers = {}) {
 }
 
 Spider.prototype.start = async function () {
-    let time = process.hrtime();
-    try {
-        await this._start();
-    } catch (err) {
-        logger.warning('_start() fail.');
-        logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`);
+    this.running = true;
+    while (this.running) {
+        let time = process.hrtime();
+        try {
+            await this._start();
+        } catch (err) {
+            logger.warning('_start() fail.');
+            logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`);
+        }
+        let diff = process.hrtime(time);
+        await delay(config.taskDelay - (ms(`${diff[0]}s`) + parseInt(diff[1] / 1000000)));
     }
-    let diff = process.hrtime(time);
-    await delay(config.taskDelay - diff[0] * 1000);
-    this.start().catch((err) => logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`));
 }
 
-// Spider.prototype.stop = async function() {
-//     // 退出
-//     this.running = false;
-// }
+// 退出
+Spider.prototype.stop = async function () {
+    this.running = false;
+}
 
 // state 
 // - active
@@ -483,7 +499,7 @@ Spider.prototype._start = async function () {
     let pool = self.pool;
     let [links] = await pool.query('select link,referer,version from links where state = ? limit 0,1', ['inactive']);
     debug('links: %j', links);
-    if (links.length === 0) return await pool.end();
+    if (links.length === 0) return;
 
     let link = links[0];
     let headers = {};
@@ -527,9 +543,9 @@ process.on('uncatchException', (err) => {
     process.exit(1);
 });
 
-process.on('SIGHUP', () => {
-    logger.info('restart...');
-});
+// process.on('SIGHUP', () => {
+//     logger.info('restart...');
+// });
 
 process.on('SIGINT', () => {
     logger.info('shutdown...');
