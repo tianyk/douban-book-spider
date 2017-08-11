@@ -44,3 +44,7 @@ function createWorker() {
 
 
 createWorker();
+
+process.on('SIGINT', () => {
+    
+});

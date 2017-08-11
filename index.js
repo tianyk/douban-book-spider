@@ -67,10 +67,11 @@ function delay(time) {
     })
 }
 
+
 async function findMyIp() {
     let httpGet = util.promisify(request.get);
     try {
-        let { body: ipInfo } = await Promise.race([httpGet('https://api.ipify.org'), httpGet('http://ipinfo.io'), httpGet('http://myip.ipip.net')]);
+        let { body: ipInfo } = await Promise.race([httpGet('http://myip.ipip.net'), httpGet('http://ipinfo.io'), httpGet('https://api.ipify.org')]);
         let match = ipInfo.match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
 
         if (match) return match[0];
@@ -132,8 +133,6 @@ Base64.prototype.decode = function (content) {
     let buf = Buffer.from(content, 'base64');
     return buf.toString();
 }
-
-// const base64 = Base64();
 
 function Parse(pattern) {
     if (!(this instanceof Parse)) return new Parse(pattern);
@@ -302,8 +301,8 @@ DoubanBookPage.prototype._parse = async function (html) {
             seriesTitle,
             rating: {
                 max: 10,
-                numRaters: ratingNumRaters,
-                average: ratingAverage,
+                numRaters: ratingNumRaters || 0,
+                average: ratingAverage || 0,
                 min: 0
             },
             summary,
@@ -318,7 +317,6 @@ DoubanBookPage.prototype._parse = async function (html) {
 // https://book.douban.com/subject/26575679/
 // https://book.douban.com/subject/25945442/
 // dobuanTag.parse('https://book.douban.com/subject/25945442/').then(console.log).catch(console.warn);
-
 function Spider(options) {
     this.pool = require('mysql2/promise').createPool(options.mysql);
     this.parses = options.parses;
@@ -342,9 +340,8 @@ function Spider(options) {
     this.base64 = new Base64();
 }
 
+
 Spider.prototype.parse = async function (url, options = {}) {
-    // 并发处理 modify: 2017年07月27日11:11:09 抽取锁定逻辑到 parse 步骤
-    // let [{ affectedRows = 0 }] = await this.pool.query(`update links set state = ?, version = ?, hostname = ? where link = ? and version = ?`, ['active', options.version + 1, this.hostname, url, options.version]);
     let [{ affectedRows = 0 }] = await this.pool.query(`update links set state = ?, version = ? where link = ? and version = ?`, ['active', options.version + 1, url, options.version]);
     debug('affectedRows: %d', affectedRows);
     if (affectedRows === 0) return;
@@ -353,13 +350,12 @@ Spider.prototype.parse = async function (url, options = {}) {
     try {
         await this._parse(url, options);
     } catch (err) {
-        // 暂时将更新标识挪到_parse内部处理
-        // await this.pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
+        await this.pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
         throw err;
     }
-    // TODO 统一更新任务状态
-    // await this.pool.query('update links set state = ? where link = ?', ['complete', url]);
+    await this.pool.query('update links set state = ? where link = ?', ['complete', url]);
 }
+
 
 Spider.prototype._parse = async function (url, options = {}) {
     debug('Spider.parse start. %s', url);
@@ -369,45 +365,28 @@ Spider.prototype._parse = async function (url, options = {}) {
     if (!parse) throw new SpiderError(`no parse ${url}`);
 
     let html = await self.snapshoot(url, options.headers);
+    await pool.query('update links set html = ? where link = ?', [html, url]);
+
     let ret;
     try {
         ret = await parse.parse(html);
     } catch (err) {
         debug('parse fail: %s', err.stack);
-        // 修改实现。异常向上继续抛，调用者决定如何处理、记录异常
-        // await pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [err.stack, html, 'failed', url]);
         throw new SpiderError(err, html);
     }
 
     let conn = await pool.getConnection();
     await conn.beginTransaction();
     try {
-        // 兼容离线分析 新增 complete-success / complete-failed 状态 抽取complete状态到事物外
-        await conn.query('update links set html = ?, state = ? where link = ?', [html, 'complete', url]);
+        // 保存新分析的链接
         if (ret.links.length > 0) {
             // insert or update
-            // await conn.query('insert into links(link) values ?', [ret.links.map(link => [link])]);
-            // await conn.query('insert into links(link) values ? on duplicate key update referer = ? ', [[link], url]);
             await Promise.all(ret.links.map(link => conn.query('insert into links(link, referer) select ?, ? where not exists (select 1 from links where link = ?)', [link, url, link])));
             await conn.query('insert into link_referers(link, referer) values ?', [ret.links.map(link => [link, url])]);
         }
-        await conn.commit();
-    } catch (err) {
-        debug('process ret fail: %s', err.stack);
-        await conn.rollback();
-        // TODO 暂时 下个版本删除
-        await pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
-        throw new SpiderError(err, html);
-    } finally {
-        if (conn) conn.release();
-    }
 
-    if (ret.book) {
-        // 兼容老版
-        conn = await pool.getConnection();
-        await conn.beginTransaction();
-        try {
-            // 暂时
+        // 保存图书
+        if (ret.book) {
             await conn.query('update links set state = ? where link = ?', ['complete-success', url]);
             let book = _.chain(ret.book).mapKeys((val, key) => decamelize(key)).mapValues((val) => is.array(val) ? val.join(',') : val).value();
             let rating = book.rating;
@@ -423,18 +402,16 @@ Spider.prototype._parse = async function (url, options = {}) {
             book['rating_min'] = rating.min;
             debug('book: %j', book);
 
-            await conn.query('insert into books set ? ', book);
-
-            await conn.commit();
-        } catch (err) {
-            debug('process ret fail: %s', err.stack);
-            await conn.rollback();
-            // TODO 暂时 下个版本删除
-            await pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'complete-failed', url]);
-            throw new SpiderError(err, html);
-        } finally {
-            if (conn) conn.release();
+            await conn.query(`insert into books(${_.keys(book).join(',')}) select ? where not exists (select 1 from books where alt = ?)`, [_.values(book), url]);
         }
+
+        await conn.commit();
+    } catch (err) {
+        debug('process ret fail: %s', err.stack);
+        await conn.rollback();
+        throw new SpiderError(err, html);
+    } finally {
+        if (conn) conn.release();
     }
 
     debug('Spider.parse done %s', url);
@@ -551,3 +528,4 @@ process.on('SIGINT', () => {
     logger.info('shutdown...');
     process.exit(0);
 });
+
