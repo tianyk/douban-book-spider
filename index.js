@@ -342,18 +342,24 @@ function Spider(options) {
 
 
 Spider.prototype.parse = async function (url, options = {}) {
+    let time = process.hrtime();
     let [{ affectedRows = 0 }] = await this.pool.query(`update links set state = ?, version = ? where link = ? and version = ?`, ['active', options.version + 1, url, options.version]);
     debug('affectedRows: %d', affectedRows);
     if (affectedRows === 0) return;
 
     // 进一步封装 把parse后（成功/失败）的逻辑抽取出来
     try {
+        // 解析
         await this._parse(url, options);
+        // 更新状态
+        await this.pool.query('update links set state = ? where link = ?', ['complete', url]);
     } catch (err) {
         await this.pool.query('update links set cause = ?, html = ?, state = ? where link = ?', [`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`, err.cause, 'failed', url]);
         throw err;
+    } finally {
+        let diff = process.hrtime(time);
+        await delay(config.taskDelay - (ms(`${diff[0]}s`) + parseInt(diff[1] / 1000000)));
     }
-    await this.pool.query('update links set state = ? where link = ?', ['complete', url]);
 }
 
 
@@ -446,15 +452,12 @@ Spider.prototype.download = async function (url, dest, headers = {}) {
 Spider.prototype.start = async function () {
     this.running = true;
     while (this.running) {
-        let time = process.hrtime();
         try {
             await this._start();
         } catch (err) {
             logger.warning('_start() fail.');
             logger.warning(`${err.name}: ${err.message}\n${err.stack}\n${err.originStack || ''}`);
         }
-        let diff = process.hrtime(time);
-        await delay(config.taskDelay - (ms(`${diff[0]}s`) + parseInt(diff[1] / 1000000)));
     }
 }
 
@@ -468,9 +471,6 @@ Spider.prototype.stop = async function () {
 // - inactive
 // - failed
 // - complete
-// 兼容离线解析
-// - complete-failed
-// - complete-success 
 Spider.prototype._start = async function () {
     let self = this;
     let pool = self.pool;
