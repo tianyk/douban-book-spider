@@ -167,10 +167,28 @@ Parse.prototype.match = function (source) {
     }
 }
 
+Parse.prototype.snapshoot = async function (uri, headers = {}) {
+    let uriObj = url.parse(uri);
+    let dest = path.join(this.dir, 'html', uriObj.host, uriObj.pathname, 'index.html');
+    try {
+        let html = await read(dest);
+        if (isStandardHtml(html)) return html;
+    } catch (err) { /* ignore */ }
+
+    let request = this.request;
+    let get = util.promisify(request.get);
+
+    let { statusCode, body } = await get(encodeURI(uri), { headers: _.merge(HEADERS, headers) });
+    if (statusCode !== 200) throw new SpiderError(`SNAPSHOOT-${statusCode}-[${uri}]`, body);
+    // 校验返回的HTML是否合法
+    if (!isStandardHtml(body)) throw new SpiderError(`NOT-STANDARD-HTML-[${uri}]`, body);
+    if (!!config.storeSnapshoot) await write(dest, body);
+    return `${body} \n <!-- ${this.hostname} -->`;
+}
+
 Parse.prototype.parse = async function (html) {
     debug('parse start');
     let ret = await this._parse(html);
-    ret.url = url;
     debug('parse done');
     return ret;
 }
@@ -178,6 +196,7 @@ Parse.prototype.parse = async function (html) {
 Parse.prototype._parse = async function (html) {
     throw new Error('_parse() is not implemented');
 }
+
 
 // Parse
 function DoubanTagIndex() {
@@ -312,6 +331,144 @@ DoubanBookPage.prototype._parse = async function (html) {
         }
     };
 }
+
+function DoubanMoiveTagPage() {
+    if (!this instanceof DoubanMoiveTagPage) return new DoubanMoiveTagPage();
+    Parse.call(this, /^https:\/\/movie.douban.com\/tag\/[^\?#]+(\?.*)?/);
+}
+
+util.inherits(DoubanMoiveTagPage, Parse);
+
+DoubanMoiveTagPage.prototype._parse = async function (html) {
+    let $ = cheerio.load(html);
+    let links = [];
+    $('div.article a.nbg').each((_, elm) => { links.push($(elm).attr('href')) });
+    $('div#tag_list a').each((_, elm) => { links.push($(elm).attr('href')) });
+    $('div.paginator a').each((_, elm) => { links.push($(elm).attr('href')) });
+    links = links.map(link => decodeURIComponent(link));
+    debug('links: %j', links);
+    return {
+        links
+    };
+}
+
+
+function DoubanMoviePage() {
+    if (!this instanceof DoubanMoviePage) return new DoubanMoviePage();
+    Parse.call(this, /^https:\/\/movie.douban.com\/subject\/\d+\/(\?#.*)?/);
+}
+
+util.inherits(DoubanMoviePage, Parse);
+
+DoubanMoviePage.prototype._parse = async function (html) {
+    let $ = cheerio.load(html);
+
+    // only return links 
+    let links = $('a[href]').map(function (_, elm) {
+        let href = $(elm).attr('href');
+        let match;
+        if (match = href.match(/https:\/\/movie.douban.com\/subject\/\d+\/?/)) {
+            return match[0];
+        } else if (match = href.match(/https:\/\/movie.douban.com\/tag\/[^\/\?]+\/?/)) {
+            return match[0];
+        } else if (match = href.match(/\/tag\/[^\/\?]+\/?/)) {
+            return 'https://movie.douban.com' + match[0];
+        }
+    }).get();
+
+    links = _.chain(links).map(link => decodeURIComponent(link)).uniq().value();
+    debug('links: %j', links);
+    return {
+        links
+    };
+
+    // TODO 解析详情
+
+    // let $subject = $('div.subject');
+    // let $rating = $('div#interest_sectl');
+    // let $relatedInfo = $('div.related_info');
+    // let $tagsSection = $('div#db-tags-section');
+    // let $recSection = $('div#db-rec-section');
+
+    // let $image = $subject.find('div#mainpic a.nbg');
+    // let $bookInfo = $subject.find('div#info');
+    // let title = $('h1 span[property]').text();
+    // let image = $subject.find('div#mainpic img').attr('src');
+
+    // // 图书基本信息
+    // let bookInfo = $bookInfo.html().split('<br>').map(html => {
+    //     return $(html).text().replace(/\s/g, '').split(':');
+    // }).reduce((bookInfo, info) => {
+    //     if (info.length < 2) return bookInfo;
+    //     if (info[0] === '译者') bookInfo[info[0]] = info.slice(1).join(' ').replace(/\//g, ',');
+    //     else bookInfo[info[0]] = info.slice(1).join(' ');
+    //     return bookInfo;
+    // }, {});
+    // // let author = $bookInfo.children('span.pl').eq(0).next('a').text().replace(/\s/g, '');
+    // let seriesId = $bookInfo.children('span.pl').filter((_, el) => {
+    //     return $(el).text() === '丛书:';
+    // }).next('a').attr('href');
+    // if (seriesId && seriesId.match(/(\d+)/)) seriesId = seriesId.match(/(\d+)/)[0];
+
+    // // let bookInfo = $bookInfo.text().match(/([^\s]+:\s+[^\s]+)+/g);
+    // // bookInfo = bookInfo.map(info => {
+    // //     return info.split(':').map(s => s.trim());
+    // // }).reduce((bookInfo, info) => {
+    // //     bookInfo[info[0]] = info[1];
+    // //     return bookInfo;
+    // // }, {});
+
+    // let { '作者': author, '出版社': publisher, '出版年': pubdate, '页数': pages, '定价': price, '装帧': binding, 'ISBN': isbn, '副标题': subtitle, '译者': translator, '丛书': seriesTitle, '原作名': originTitle } = bookInfo;
+
+    // // 评分
+    // let ratingAverage = $rating.find('.rating_num').text().trim();
+    // let ratingNumRaters = $rating.find('.rating_people').children('span').text().trim();
+
+    // // 内容简介
+    // let summary = $relatedInfo.children('div.indent').eq(0).text().trim();
+    // // 作者简介
+    // let authorIntro = $relatedInfo.children('div.indent').eq(1).text().trim();
+    // // 目录
+    // let catalog = $relatedInfo.children('div.indent').eq(3).text().trim();
+
+    // // 标签
+    // let tags = $tagsSection.find('div.indent span').map((_, el) => $(el).text().trim()).get();
+
+    // // 也喜欢
+    // let links = $recSection.find('.content dt a').map((_, el) => $(el).attr('href')).get();
+    // debug('links: %j', links);
+
+    // return {
+    //     links,
+    //     book: {
+    //         title,
+    //         originTitle,
+    //         image,
+    //         author,
+    //         translator,
+    //         publisher,
+    //         pubdate,
+    //         pages,
+    //         price,
+    //         binding,
+    //         isbn,
+    //         subtitle,
+    //         seriesId,
+    //         seriesTitle,
+    //         rating: {
+    //             max: 10,
+    //             numRaters: ratingNumRaters || 0,
+    //             average: ratingAverage || 0,
+    //             min: 0
+    //         },
+    //         summary,
+    //         authorIntro,
+    //         catalog,
+    //         tags
+    //     }
+    // };
+}
+
 
 // let dobuanTag = new DoubanBookPage();
 // https://book.douban.com/subject/26575679/
@@ -512,6 +669,11 @@ findMyIp()
     })
     .catch(logger.error.bind(logger));
 
+// let doubanMovieTagPage = new DoubanMoviePage();
+// doubanMovieTagPage.snapshoot('https://movie.douban.com/tag/战争/?abc=swgwg')
+//     .then(html => doubanMovieTagPage.parse(html))
+//     .then(console.log)
+//     .catch(console.warn);
 
 process.on('uncatchException', (err) => {
     logger.error('<---------- uncatchException');
