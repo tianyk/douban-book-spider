@@ -662,7 +662,7 @@ findMyIp()
         let spider = new Spider({
             mysql: config.mysql,
             hostname: `${ip}/${hostname}/${package.version}`,
-            parses: [new DoubanTagIndex(), new DoubanTagPage(), new DoubanBookPage()]
+            parses: [new DoubanTagIndex(), new DoubanTagPage(), new DoubanBookPage(), new DoubanMoiveTagPage(), new DoubanMoviePage()]
         });
 
         spider.start().catch(logger.warning.bind(logger));
