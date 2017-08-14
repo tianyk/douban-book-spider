@@ -633,7 +633,7 @@ Spider.prototype._start = async function () {
     let pool = self.pool;
     let [links] = await pool.query('select link,referer,version from links where state = ? limit 0,1', ['inactive']);
     debug('links: %j', links);
-    if (links.length === 0) return;
+    if (links.length === 0) return await delay(config.taskDelay);
 
     let link = links[0];
     let headers = {};
