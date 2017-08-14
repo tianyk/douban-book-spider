@@ -550,7 +550,6 @@ Spider.prototype._parse = async function (url, options = {}) {
 
         // 保存图书
         if (ret.book) {
-            await conn.query('update links set state = ? where link = ?', ['complete-success', url]);
             let book = _.chain(ret.book).mapKeys((val, key) => decamelize(key)).mapValues((val) => is.array(val) ? val.join(',') : val).value();
             let rating = book.rating;
             delete book.rating;
@@ -574,7 +573,7 @@ Spider.prototype._parse = async function (url, options = {}) {
         await conn.rollback();
         throw new SpiderError(err, html);
     } finally {
-        if (conn) conn.release();
+        if (conn) await conn.release();
     }
 
     debug('Spider.parse done %s', url);
