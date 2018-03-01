@@ -1,0 +1,17 @@
+{
+    "domain": "example.com",
+    "_comment_0": "是否存储抓取的HTML代码",
+    "storeSnapshoot": true,
+    "_comment_1": "任务延迟，防止过快被屏蔽",
+    "taskDelay": 5000,
+    "logpath": "/dev/null",
+    "mysql": {
+        "database": "library",
+        "user": "root",
+        "password": "doog",
+        "host": "127.0.0.1",
+        "connectionLimit": 10,
+        "waitForConnections": false,
+        "debug": false
+    }
+}
